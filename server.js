@@ -4,6 +4,9 @@ const mysql = require('mysql2/promise');
 const nodemailer = require('nodemailer');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
 const bodyParser = require('body-parser');
 require('dotenv').config();
 const app = express();
@@ -13,6 +16,34 @@ const PORT = 5000;
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
+  }
+});
+
+const allowedFileTypes = ['.pdf', '.png', '.jpg', '.jpeg'];
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (!allowedFileTypes.includes(ext)) {
+      return cb(new Error('Only PDF/JPG/JPEG/PNG files are allowed'));
+    }
+    cb(null, true);
+  }
+});
+
+app.use('/uploads', express.static(uploadDir));
 
 //db connection
 const connection = mysql.createPool({
@@ -54,8 +85,9 @@ const validatePhone = (phone) => {
   const phoneRegex = /^[6-9]\d{9}$/;
   return phoneRegex.test(phone.replace(/\D/g, ''));
 };
+const validRoles = ['participant', 'organizer', 'volunteer', 'faculty', 'admin'];
 const validateUserInput = (req, res, next) => {
-  const { name, email, phone, college, year } = req.body;
+  const { name, email, phone, college, year, role } = req.body;
   if (!name || !email || !phone || !college || !year) {
     return res.status(400).json({ error: 'All fields are required' });
   }
@@ -70,6 +102,9 @@ const validateUserInput = (req, res, next) => {
   }
   if (college.length < 3 || college.length > 150) {
     return res.status(400).json({ error: 'College name should be between 3-150 characters' });
+  }
+  if (role && !validRoles.includes(role)) {
+    return res.status(400).json({ error: 'Invalid user role' });
   }
 
   next();
@@ -107,6 +142,20 @@ const authenticateAdmin = async (req, res, next) => {
   }
 };
 
+app.post('/upload/id-card', upload.single('file'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+  res.status(201).json({
+    success: true,
+    data: {
+      fileUrl: `/uploads/${req.file.filename}`,
+      fileName: req.file.originalname,
+      size: req.file.size
+    }
+  });
+});
+
 //all users
 app.get('/users', async(req, res) => {
   try {
@@ -115,7 +164,7 @@ app.get('/users', async(req, res) => {
     const offset = (page - 1) * limit;
     const [countResult] = await connection.query('SELECT COUNT(*) as total FROM users');
     const total = countResult[0].total;
-    const [users] = await connection.query('SELECT id, name, email, phone, college, year, created_at FROM users LIMIT ? OFFSET ?',[parseInt(limit), offset]);
+    const [users] = await connection.query('SELECT id, name, email, phone, college, year, role, id_card_url, created_at FROM users LIMIT ? OFFSET ?',[parseInt(limit), offset]);
     res.json({
       success: true,
       data: users,
@@ -149,12 +198,20 @@ app.get('/users/:id', async (req, res) => {
 //new user
 app.post('/users', validateUserInput, async (req, res) => {
   try {
-    const { name, email, phone, college, year } = req.body;
+    const { name, email, phone, college, year, password, role, id_card_url } = req.body;
+    if (!password || String(password).length < 6) {
+      return res.status(400).json({ error: 'Password with at least 6 characters is required' });
+    }
     const [existing] = await connection.query('SELECT id FROM users WHERE email = ?', [email]);
     if (existing.length > 0) {
       return res.status(400).json({ error: 'User with this email already exists' });
     }
-    const [result] = await connection.query('INSERT INTO users (name, email, phone, college, year) VALUES (?, ?, ?, ?, ?)',[name, email, phone, college, year]);
+    const passwordHash = await bcrypt.hash(password, 10);
+    const safeRole = role && validRoles.includes(role) ? role : 'participant';
+    const [result] = await connection.query(
+      'INSERT INTO users (name, email, phone, college, year, password_hash, role, id_card_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, email, phone, college, year, passwordHash, safeRole, id_card_url || null]
+    );
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
@@ -169,9 +226,12 @@ app.post('/users', validateUserInput, async (req, res) => {
 //update user
 app.put('/users/:id', validateUserInput, async (req, res) => {
   try {
-    const { name, email, phone, college, year } = req.body;
-    const [result] = await connection.query('UPDATE users SET name = ?, email = ?, phone = ?, college = ?, year = ? WHERE id = ?',
-      [name, email, phone, college, year, req.params.id]);
+    const { name, email, phone, college, year, role, id_card_url } = req.body;
+    const safeRole = role && validRoles.includes(role) ? role : 'participant';
+    const [result] = await connection.query(
+      'UPDATE users SET name = ?, email = ?, phone = ?, college = ?, year = ?, role = ?, id_card_url = ? WHERE id = ?',
+      [name, email, phone, college, year, safeRole, id_card_url || null, req.params.id]
+    );
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -179,6 +239,50 @@ app.put('/users/:id', validateUserInput, async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Error updating user' });
+  }
+});
+
+app.post('/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    const [users] = await connection.query(
+      'SELECT id, name, email, role, password_hash FROM users WHERE email = ?',
+      [email]
+    );
+
+    if (!users.length) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const user = users[0];
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, jwtSecret, {
+      expiresIn: '4h'
+    });
+
+    res.json({
+      success: true,
+      data: {
+        token,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role
+        }
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Login failed' });
   }
 });
 
@@ -200,13 +304,35 @@ app.delete('/users/:id', async (req, res) => {
 app.get('/events', async (req, res) => {
   try {
     const category = req.query.category;
+    const term = req.query.term;
+    const fromDate = req.query.fromDate;
+    const toDate = req.query.toDate;
+    const sort = req.query.sort || 'date_asc';
     let query = 'SELECT * FROM events WHERE 1=1';
     let params = [];
     if (category) {
       query += ' AND category = ?';
       params.push(category);
     }
-    query += ' ORDER BY date ASC, time ASC';
+    if (term) {
+      query += ' AND (title LIKE ? OR description LIKE ? OR category LIKE ?)';
+      params.push(`%${term}%`, `%${term}%`, `%${term}%`);
+    }
+    if (fromDate) {
+      query += ' AND date >= ?';
+      params.push(fromDate);
+    }
+    if (toDate) {
+      query += ' AND date <= ?';
+      params.push(toDate);
+    }
+
+    if (sort === 'date_desc') {
+      query += ' ORDER BY date DESC, time DESC';
+    } else {
+      query += ' ORDER BY date ASC, time ASC';
+    }
+
     const [events] = await connection.query(query, params);
     res.json({
       success: true,
@@ -251,12 +377,13 @@ app.get('/events/list/categories', async (req, res) => {
 //event creation
 app.post('/events/create', async (req, res) => {
   try {
-    const { title, category, description, date, time, venue, max_participants, registration_fee, image_url } = req.body;
+    const { title, category, description, rules, eligibility, prize_details, date, time, venue, max_participants, registration_fee, image_url } = req.body;
     if (!title || !category || !description || !date || !time) {
       return res.status(400).json({ error: 'Required fields missing' });
     }
-    const [result] = await connection.query('INSERT INTO events (title, category, description, date, time, venue, max_participants, registration_fee, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [title, category, description, date, time, venue, max_participants, registration_fee, image_url]
+    const [result] = await connection.query(
+      'INSERT INTO events (title, category, description, rules, eligibility, prize_details, date, time, venue, max_participants, registration_fee, image_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [title, category, description, rules || null, eligibility || null, prize_details || null, date, time, venue, max_participants, registration_fee, image_url]
     );
     res.status(201).json({
       success: true,
@@ -272,9 +399,10 @@ app.post('/events/create', async (req, res) => {
 //event updation
 app.put('/events/:id', async (req, res) => {
   try {
-    const { title, category, description, date, time, venue, max_participants, registration_fee, image_url } = req.body;
-    const [result] = await connection.query('UPDATE events SET title = ?, category = ?, description = ?, date = ?, time = ?, venue = ?, max_participants = ?, registration_fee = ?, image_url = ? WHERE id = ?',
-      [title, category, description, date, time, venue, max_participants, registration_fee, image_url, req.params.id]
+    const { title, category, description, rules, eligibility, prize_details, date, time, venue, max_participants, registration_fee, image_url } = req.body;
+    const [result] = await connection.query(
+      'UPDATE events SET title = ?, category = ?, description = ?, rules = ?, eligibility = ?, prize_details = ?, date = ?, time = ?, venue = ?, max_participants = ?, registration_fee = ?, image_url = ? WHERE id = ?',
+      [title, category, description, rules || null, eligibility || null, prize_details || null, date, time, venue, max_participants, registration_fee, image_url, req.params.id]
     );
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Event not found' });
@@ -581,12 +709,31 @@ app.put('/query/:id/respond', async (req, res) => {
     if (!admin_response) {
       return res.status(400).json({ error: 'Response is required' });
     }
+
+    const [queryRows] = await connection.query('SELECT id, name, email, subject FROM queries WHERE id = ?', [req.params.id]);
+    if (queryRows.length === 0) {
+      return res.status(404).json({ error: 'Query not found' });
+    }
+
     const [result] = await connection.query('UPDATE queries SET status = ?, admin_response = ?, responded_at = NOW() WHERE id = ?',
       ['resolved', admin_response, req.params.id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Query not found' });
     }
+
+    try {
+      await transporter.sendMail({
+        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+        to: queryRows[0].email,
+        subject: `Response to your query: ${queryRows[0].subject}`,
+        text: `Hi ${queryRows[0].name},\n\n${admin_response}\n\n- PRABUDDHA 2026 Team`,
+        html: `<p>Hi ${queryRows[0].name},</p><p>${admin_response}</p><p>- PRABUDDHA 2026 Team</p>`
+      });
+    } catch (emailError) {
+      console.error('Failed to send query response email:', emailError);
+    }
+
     res.json({ success: true, message: 'Response sent successfully' });
   } catch (error) {
     console.error(error);

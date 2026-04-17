@@ -8,13 +8,11 @@ CREATE TABLE users (
   phone VARCHAR(15) NOT NULL,
   college VARCHAR(150) NOT NULL,
   year VARCHAR(50) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  role ENUM('participant','organizer','volunteer','faculty','admin') DEFAULT 'participant',
+  id_card_url VARCHAR(255),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
-
-CREATE TABLE event_categories (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  name VARCHAR(50) UNIQUE NOT NULL
 );
 
 CREATE TABLE events (
@@ -22,6 +20,9 @@ CREATE TABLE events (
   title VARCHAR(100) NOT NULL,
   category VARCHAR(50) NOT NULL,
   description LONGTEXT NOT NULL,
+  rules LONGTEXT,
+  eligibility VARCHAR(255),
+  prize_details LONGTEXT,
   date DATE NOT NULL,
   time TIME NOT NULL,
   venue VARCHAR(150),
@@ -45,7 +46,10 @@ CREATE TABLE registrations (
 
 CREATE TABLE queries (
   id INT PRIMARY KEY AUTO_INCREMENT,
-  user_id INT,
+  user_id INT NULL,
+  name VARCHAR(100) NOT NULL,
+  email VARCHAR(100) NOT NULL,
+  phone VARCHAR(20),
   subject VARCHAR(200) NOT NULL,
   message LONGTEXT NOT NULL,
   status ENUM('new','in-progress','resolved') DEFAULT 'new',
@@ -88,8 +92,17 @@ CREATE TABLE admin_users (
   FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE SET NULL
 );
 
-CREATE INDEX idx_event_category ON events(category_id);
+INSERT INTO roles (role_name) VALUES
+('participant'),
+('organizer'),
+('volunteer'),
+('faculty'),
+('admin');
+
+CREATE INDEX idx_event_category ON events(category);
+CREATE INDEX idx_event_date ON events(date);
 CREATE INDEX idx_registration_user ON registrations(user_id);
 CREATE INDEX idx_registration_event ON registrations(event_id);
 CREATE INDEX idx_query_status ON queries(status);
 CREATE INDEX idx_user_email ON users(email);
+CREATE INDEX idx_query_email ON queries(email);
