@@ -30,7 +30,7 @@ const connection = mysql.createPool({
 })();
 
 // Serve static files from frontend
-//                                                                                 app.use(express.static('../frontend'));
+//app.use(express.static('../frontend'));
 
 //authentication
 const validateEmail = (email) => {
