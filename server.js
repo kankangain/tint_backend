@@ -1,6 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
+const nodemailer = require('nodemailer');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const bodyParser = require('body-parser');
 require('dotenv').config();
 const app = express();
@@ -20,6 +23,16 @@ const connection = mysql.createPool({
   port: process.env.DB_PORT,
 });
 
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: parseInt(process.env.SMTP_PORT || '587', 10),
+  secure: process.env.SMTP_SECURE === 'true',
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
 (async () => {
   try {
     await connection.query('SELECT 1');
@@ -30,7 +43,7 @@ const connection = mysql.createPool({
 })();
 
 // Serve static files from frontend
-//                                                                                 app.use(express.static('../frontend'));
+//app.use(express.static('../frontend'));
 
 //authentication
 const validateEmail = (email) => {
@@ -77,12 +90,20 @@ const validateQueryInput = (req, res, next) => {
   }
   next();
 };
-const authenticateAdmin = (req, res, next) => {
-  const { username, password } = req.body;
-  if(username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD) {
+const jwtSecret = process.env.JWT_SECRET;
+const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || (process.env.ADMIN_PASSWORD ? bcrypt.hashSync(process.env.ADMIN_PASSWORD, 10) : null);
+const authenticateAdmin = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, jwtSecret);
+    req.admin = decoded;
     next();
-  }else{
-    res.status(401).json({ error: 'Invalid credentials' });
+  } catch (err) {
+    res.status(401).json({ error: 'Invalid or expired token' });
   }
 };
 
@@ -318,13 +339,13 @@ app.post('/reg/user', async (req, res) => {
     if (!user_id || !event_id) {
       return res.status(400).json({ error: 'user_id and event_id are required' });
     }
-    const [users] = await connection.query('SELECT id FROM users WHERE id = ?', [user_id]);
+    const [users] = await connection.query('SELECT id, name, email FROM users WHERE id = ?', [user_id]);
 
     if (users.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const [events] = await connection.query('SELECT id FROM events WHERE id = ?', [event_id]);
+    const [events] = await connection.query('SELECT id, title FROM events WHERE id = ?', [event_id]);
 
     if (events.length === 0) {
       return res.status(404).json({ error: 'Event not found' });
@@ -337,6 +358,18 @@ app.post('/reg/user', async (req, res) => {
     }
 
     const [result] = await connection.query('INSERT INTO registrations (user_id, event_id, status) VALUES (?, ?, ?)',[user_id, event_id, 'confirmed']);
+
+    try {
+      await transporter.sendMail({
+        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+        to: users[0].email,
+        subject: `Registration confirmed for ${events[0].title}`,
+        text: `Hi ${users[0].name},\n\nYour registration for "${events[0].title}" is confirmed.\n\nThank you for registering.`,
+        html: `<p>Hi ${users[0].name},</p><p>Your registration for "<strong>${events[0].title}</strong>" is confirmed.</p><p>Thank you for registering.</p>`,
+      });
+    } catch (emailError) {
+      console.error('Email send failed:', emailError);
+    }
 
     res.status(201).json({
       success: true,
@@ -384,15 +417,36 @@ app.delete('/reg/:id', async (req, res) => {
   }
 });
 
-//admin login
-app.post('/admin/login', authenticateAdmin, async (req, res) => {
+app.post('/admin/login', async (req, res) => {
   try {
-    const token = Buffer.from(`${process.env.ADMIN_USERNAME}:${Date.now()}`).toString('base64');
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required' });
+    }
+    if (username !== process.env.ADMIN_USERNAME || !adminPasswordHash) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    const passwordMatches = await bcrypt.compare(password, adminPasswordHash);
+    if (!passwordMatches) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    const token = jwt.sign({ username }, jwtSecret, { expiresIn: '1h' });
+    try {
+      await transporter.sendMail({
+        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+        to: process.env.ADMIN_NOTIFICATION_EMAIL || process.env.SMTP_USER,
+        subject: `Admin login alert for ${username}`,
+        text: `Admin ${username} logged in at ${new Date().toISOString()}`,
+        html: `<p>Admin <strong>${username}</strong> logged in at <strong>${new Date().toISOString()}</strong>.</p>`,
+      });
+    } catch (emailError) {
+      console.error('Admin login email failed:', emailError);
+    }
     res.json({
       success: true,
       message: 'Login successful',
-      token: token,
-      admin: process.env.ADMIN_USERNAME
+      token,
+      admin: username
     });
   } catch (error) {
     console.error(error);
@@ -401,7 +455,7 @@ app.post('/admin/login', authenticateAdmin, async (req, res) => {
 });
 
 //admin stats
-app.get('/admin/dashboard/stats', async (req, res) => {
+app.get('/admin/dashboard/stats', authenticateAdmin, async (req, res) => {
   try {
     const [userCount] = await connection.query('SELECT COUNT(*) as count FROM users');
     const [eventCount] = await connection.query('SELECT COUNT(*) as count FROM events');
@@ -425,7 +479,7 @@ app.get('/admin/dashboard/stats', async (req, res) => {
 });
 
 //get recent details
-app.get('/admin/dashboard/recent', async (req, res) => {
+app.get('/admin/dashboard/recent', authenticateAdmin, async (req, res) => {
   try {
     const [recentUsers] = await connection.query(
       'SELECT id, name, email, created_at FROM users ORDER BY created_at DESC LIMIT 5'
@@ -451,7 +505,7 @@ app.get('/admin/dashboard/recent', async (req, res) => {
 });
 
 //all registrations
-app.get('/admin/registrations/all', async (req, res) => {
+app.get('/admin/registrations/all', authenticateAdmin, async (req, res) => {
   try {
     const [registrations] = await connection.query(`SELECT r.id, r.user_id, r.event_id, r.registration_date, r.status, u.name, u.email, e.title
     FROM registrations r JOIN users u ON r.user_id = u.id JOIN events e ON r.event_id = e.id ORDER BY r.registration_date DESC`);
