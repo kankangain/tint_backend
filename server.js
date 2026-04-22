@@ -765,7 +765,19 @@ app.put('/query/:id/status', async (req, res) => {
 // Get FAQ
 app.get('/query/faq/all', async (req, res) => {
   try {
-    const [faq] = await connection.query('SELECT * FROM faq ORDER BY order_position ASC');
+    const [columns] = await connection.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'faq'`
+    );
+
+    const columnNames = columns.map((column) => column.COLUMN_NAME);
+    const orderColumn = columnNames.includes('order_position')
+      ? 'order_position'
+      : columnNames.includes('order_num')
+        ? 'order_num'
+        : 'id';
+
+    const [faq] = await connection.query(`SELECT * FROM faq ORDER BY ${orderColumn} ASC`);
     res.json({
       success: true,
       data: faq
