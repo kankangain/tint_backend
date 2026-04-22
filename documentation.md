@@ -76,11 +76,13 @@ Server URL: `http://localhost:5000`
 ## Authentication
 
 ### User Login
+
 - `POST /auth/login`
 - checks user email/password hash
 - returns JWT token (expires in 4 hours)
 
 ### Admin Login
+
 - `POST /admin/login`
 - validates admin credentials from environment
 - returns JWT token (expires in 1 hour)
@@ -103,9 +105,11 @@ Authorization: Bearer <token>
 ## API Routes
 
 ### Health
+
 - `GET /api/health`
 
 ### Users
+
 - `GET /users` (supports pagination via `page`, `limit`)
 - `GET /users/:id`
 - `POST /users`
@@ -113,6 +117,7 @@ Authorization: Bearer <token>
 - `DELETE /users/:id`
 
 `POST /users` expects at least:
+
 - `name`
 - `email`
 - `phone`
@@ -123,6 +128,7 @@ Authorization: Bearer <token>
 - optional `id_card_url`
 
 ### Events
+
 - `GET /events`
 - `GET /events/users/:id`
 - `GET /events/list/categories`
@@ -131,6 +137,7 @@ Authorization: Bearer <token>
 - `DELETE /events/:id`
 
 `GET /events` supports query params:
+
 - `category`
 - `term`
 - `fromDate`
@@ -138,6 +145,7 @@ Authorization: Bearer <token>
 - `sort` (`date_asc`, `date_desc`)
 
 ### Registrations
+
 - `GET /reg/user/:userId`
 - `GET /reg/event/:eventId`
 - `POST /reg/user`
@@ -145,20 +153,24 @@ Authorization: Bearer <token>
 - `DELETE /reg/:id`
 
 `POST /reg/user` body:
+
 - `user_id`
 - `event_id`
 
 Behavior:
+
 - validates user and event existence
 - blocks duplicate registrations
 - sends confirmation email
 
 ### Admin Dashboard
+
 - `GET /admin/dashboard/stats` (protected)
 - `GET /admin/dashboard/recent` (protected)
 - `GET /admin/registrations/all` (protected)
 
 ### Queries and FAQ
+
 - `GET /query/all` (optional `status` filter)
 - `GET /query/:id`
 - `POST /query`
@@ -167,6 +179,7 @@ Behavior:
 - `GET /query/faq/all`
 
 `PUT /query/:id/respond`:
+
 - updates status to `resolved`
 - stores `admin_response`
 - sends email response to query submitter
@@ -174,6 +187,7 @@ Behavior:
 ## Database Overview
 
 Primary tables from `schema.sql`:
+
 - `users`
 - `events`
 - `registrations`
